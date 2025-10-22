@@ -1,6 +1,6 @@
 """
-Business: User registration and login with password hashing
-Args: event - dict with httpMethod, body (username, password)
+Business: User registration, login, settings update with password hashing
+Args: event - dict with httpMethod, body (username, password, notifications)
       context - object with attributes: request_id, function_name
 Returns: HTTP response with user data or error
 """
@@ -21,14 +21,83 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             'statusCode': 200,
             'headers': {
                 'Access-Control-Allow-Origin': '*',
-                'Access-Control-Allow-Methods': 'POST, OPTIONS',
+                'Access-Control-Allow-Methods': 'GET, POST, PUT, OPTIONS',
                 'Access-Control-Allow-Headers': 'Content-Type',
                 'Access-Control-Max-Age': '86400'
             },
             'body': ''
         }
     
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    cur = conn.cursor()
+    
+    if method == 'GET':
+        query_params = event.get('queryStringParameters', {}) or {}
+        user_id = query_params.get('userId')
+        
+        if not user_id:
+            cur.close()
+            conn.close()
+            return {
+                'statusCode': 400,
+                'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'},
+                'body': json.dumps({'error': 'User ID required'}),
+                'isBase64Encoded': False
+            }
+        
+        cur.execute("SELECT notifications_enabled FROM users WHERE id = %s", (user_id,))
+        result = cur.fetchone()
+        cur.close()
+        conn.close()
+        
+        if not result:
+            return {
+                'statusCode': 404,
+                'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'},
+                'body': json.dumps({'error': 'User not found'}),
+                'isBase64Encoded': False
+            }
+        
+        return {
+            'statusCode': 200,
+            'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'},
+            'body': json.dumps({'notificationsEnabled': result[0]}),
+            'isBase64Encoded': False
+        }
+    
+    if method == 'PUT':
+        body_data = json.loads(event.get('body', '{}'))
+        user_id = body_data.get('userId')
+        notifications_enabled = body_data.get('notificationsEnabled')
+        
+        if not user_id or notifications_enabled is None:
+            cur.close()
+            conn.close()
+            return {
+                'statusCode': 400,
+                'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'},
+                'body': json.dumps({'error': 'Invalid data'}),
+                'isBase64Encoded': False
+            }
+        
+        cur.execute(
+            "UPDATE users SET notifications_enabled = %s WHERE id = %s",
+            (notifications_enabled, user_id)
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        return {
+            'statusCode': 200,
+            'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'},
+            'body': json.dumps({'success': True}),
+            'isBase64Encoded': False
+        }
+    
     if method != 'POST':
+        cur.close()
+        conn.close()
         return {
             'statusCode': 405,
             'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'},
@@ -48,9 +117,6 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             'body': json.dumps({'error': 'Username and password required'}),
             'isBase64Encoded': False
         }
-    
-    conn = psycopg2.connect(os.environ['DATABASE_URL'])
-    cur = conn.cursor()
     
     if action == 'register':
         password_hash = hash_password(password)
@@ -86,7 +152,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         password_hash = hash_password(password)
         
         cur.execute(
-            "SELECT id, username FROM users WHERE username = %s AND password = %s",
+            "SELECT id, username, notifications_enabled FROM users WHERE username = %s AND password = %s",
             (username, password_hash)
         )
         user = cur.fetchone()
@@ -101,7 +167,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 'isBase64Encoded': False
             }
         
-        user_id, username = user
+        user_id, username, notifications_enabled = user
         cur.execute("UPDATE users SET last_seen = CURRENT_TIMESTAMP WHERE id = %s", (user_id,))
         conn.commit()
         cur.close()
@@ -110,7 +176,11 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         return {
             'statusCode': 200,
             'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'},
-            'body': json.dumps({'userId': user_id, 'username': username}),
+            'body': json.dumps({
+                'userId': user_id, 
+                'username': username,
+                'notificationsEnabled': notifications_enabled if notifications_enabled is not None else True
+            }),
             'isBase64Encoded': False
         }
     

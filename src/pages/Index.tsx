@@ -2,6 +2,9 @@ import { useState, useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card } from '@/components/ui/card';
+import { Switch } from '@/components/ui/switch';
+import { Label } from '@/components/ui/label';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import Icon from '@/components/ui/icon';
 import { useToast } from '@/hooks/use-toast';
 
@@ -13,11 +16,15 @@ interface Message {
   username: string;
   message: string;
   timestamp: string;
+  messageType?: string;
+  mediaUrl?: string;
+  userId?: number;
 }
 
 interface User {
   userId: number;
   username: string;
+  notificationsEnabled?: boolean;
 }
 
 export default function Index() {
@@ -30,14 +37,24 @@ export default function Index() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [onlineCount, setOnlineCount] = useState(0);
+  const [notificationsEnabled, setNotificationsEnabled] = useState(true);
+  const [showSettings, setShowSettings] = useState(false);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [isRecording, setIsRecording] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const { toast } = useToast();
+  const lastMessageCountRef = useRef(0);
 
   useEffect(() => {
     const savedUser = localStorage.getItem('user');
     if (savedUser) {
-      setUser(JSON.parse(savedUser));
+      const userData = JSON.parse(savedUser);
+      setUser(userData);
       setIsAuth(true);
+      setNotificationsEnabled(userData.notificationsEnabled ?? true);
     }
   }, []);
 
@@ -55,7 +72,24 @@ export default function Index() {
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages]);
+    
+    if (messages.length > lastMessageCountRef.current && lastMessageCountRef.current > 0) {
+      const newMsg = messages[messages.length - 1];
+      if (newMsg.username !== user?.username && notificationsEnabled) {
+        playNotificationSound();
+        if ('Notification' in window && Notification.permission === 'granted') {
+          new Notification(`${newMsg.username}: ${newMsg.message.substring(0, 50)}`);
+        }
+      }
+    }
+    lastMessageCountRef.current = messages.length;
+  }, [messages, user, notificationsEnabled]);
+
+  const playNotificationSound = () => {
+    const audio = new Audio('data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2EcBj+a2/LDciUFLIHO8tiJNwgZaLvt559NEAxQp+PwtmMcBjiR1/LMeSwFJHfH8N2QQAoUXrTp66hVFApGn+DyvmwhBSuBzvLZiDcJGGi57OWeTRALUKbk77RgGwU7k9br1IQ0CxVqtvPtnl8dC0S06Oy2ZCIEMpDR7N2UQA0TXsH28KhJD');
+    audio.volume = 0.3;
+    audio.play().catch(() => {});
+  };
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -118,6 +152,12 @@ export default function Index() {
       setUser(data);
       localStorage.setItem('user', JSON.stringify(data));
       setIsAuth(true);
+      setNotificationsEnabled(data.notificationsEnabled ?? true);
+      
+      if ('Notification' in window && Notification.permission === 'default') {
+        Notification.requestPermission();
+      }
+      
       toast({
         title: 'Успешно!',
         description: isLogin ? 'Вы вошли в систему' : 'Регистрация прошла успешно',
@@ -131,12 +171,99 @@ export default function Index() {
     }
   };
 
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const validTypes = ['image/png', 'image/jpeg', 'image/jpg', 'audio/mpeg', 'audio/mp3'];
+      if (!validTypes.includes(file.type)) {
+        toast({
+          title: 'Ошибка',
+          description: 'Поддерживаются только PNG, JPG и MP3',
+          variant: 'destructive',
+        });
+        return;
+      }
+      
+      if (file.size > 10 * 1024 * 1024) {
+        toast({
+          title: 'Ошибка',
+          description: 'Файл не должен превышать 10 МБ',
+          variant: 'destructive',
+        });
+        return;
+      }
+      
+      setSelectedFile(file);
+    }
+  };
+
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (event) => {
+        audioChunksRef.current.push(event.data);
+      };
+
+      mediaRecorder.onstop = async () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        const file = new File([audioBlob], 'voice.webm', { type: 'audio/webm' });
+        setSelectedFile(file);
+        stream.getTracks().forEach(track => track.stop());
+      };
+
+      mediaRecorder.start();
+      setIsRecording(true);
+    } catch (error) {
+      toast({
+        title: 'Ошибка',
+        description: 'Не удалось получить доступ к микрофону',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+    }
+  };
+
+  const uploadFile = async (file: File): Promise<string> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    
+    const response = await fetch('https://tmpfiles.org/api/v1/upload', {
+      method: 'POST',
+      body: formData,
+    });
+    
+    const data = await response.json();
+    return data.data.url.replace('tmpfiles.org/', 'tmpfiles.org/dl/');
+  };
+
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    if (!newMessage.trim()) return;
+    if (!newMessage.trim() && !selectedFile) return;
 
     try {
+      let mediaUrl = null;
+      let messageType = 'text';
+
+      if (selectedFile) {
+        mediaUrl = await uploadFile(selectedFile);
+        if (selectedFile.type.startsWith('image/')) {
+          messageType = 'image';
+        } else if (selectedFile.type.startsWith('audio/')) {
+          messageType = 'audio';
+        }
+      }
+
       const response = await fetch(CHAT_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -144,17 +271,110 @@ export default function Index() {
           userId: user?.userId,
           username: user?.username,
           message: newMessage,
+          messageType,
+          mediaUrl,
         }),
       });
 
-      if (response.ok) {
-        setNewMessage('');
-        fetchMessages();
+      const data = await response.json();
+
+      if (!response.ok) {
+        toast({
+          title: 'Ошибка',
+          description: data.error || 'Не удалось отправить сообщение',
+          variant: 'destructive',
+        });
+        return;
       }
+
+      setNewMessage('');
+      setSelectedFile(null);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      fetchMessages();
     } catch (error) {
       toast({
         title: 'Ошибка',
         description: 'Не удалось отправить сообщение',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const handleRemoveMessage = async (messageId: number) => {
+    try {
+      await fetch(CHAT_URL, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messageId,
+          userId: user?.userId,
+        }),
+      });
+      fetchMessages();
+      toast({
+        title: 'Сообщение удалено',
+      });
+    } catch (error) {
+      toast({
+        title: 'Ошибка',
+        description: 'Не удалось удалить сообщение',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const handleReportMessage = async (messageId: number) => {
+    try {
+      await fetch(CHAT_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'report',
+          messageId,
+          userId: user?.userId,
+          reason: 'Inappropriate content',
+        }),
+      });
+      toast({
+        title: 'Жалоба отправлена',
+        description: 'Спасибо за помощь в модерации',
+      });
+    } catch (error) {
+      toast({
+        title: 'Ошибка',
+        description: 'Не удалось отправить жалобу',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const toggleNotifications = async (enabled: boolean) => {
+    try {
+      await fetch(AUTH_URL, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: user?.userId,
+          notificationsEnabled: enabled,
+        }),
+      });
+      
+      setNotificationsEnabled(enabled);
+      const updatedUser = { ...user!, notificationsEnabled: enabled };
+      setUser(updatedUser);
+      localStorage.setItem('user', JSON.stringify(updatedUser));
+      
+      if (enabled && 'Notification' in window && Notification.permission === 'default') {
+        Notification.requestPermission();
+      }
+      
+      toast({
+        title: enabled ? 'Уведомления включены' : 'Уведомления отключены',
+      });
+    } catch (error) {
+      toast({
+        title: 'Ошибка',
+        description: 'Не удалось обновить настройки',
         variant: 'destructive',
       });
     }
@@ -237,6 +457,31 @@ export default function Index() {
           </div>
           <div className="flex items-center gap-4">
             <span className="text-sm text-muted-foreground">@{user?.username}</span>
+            
+            <Dialog open={showSettings} onOpenChange={setShowSettings}>
+              <DialogTrigger asChild>
+                <Button variant="outline" size="sm">
+                  <Icon name="Settings" size={16} className="mr-2" />
+                  Настройки
+                </Button>
+              </DialogTrigger>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Настройки</DialogTitle>
+                </DialogHeader>
+                <div className="space-y-4 py-4">
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="notifications">Уведомления о новых сообщениях</Label>
+                    <Switch
+                      id="notifications"
+                      checked={notificationsEnabled}
+                      onCheckedChange={toggleNotifications}
+                    />
+                  </div>
+                </div>
+              </DialogContent>
+            </Dialog>
+            
             <Button variant="outline" size="sm" onClick={handleLogout}>
               <Icon name="LogOut" size={16} className="mr-2" />
               Выйти
@@ -282,6 +527,22 @@ export default function Index() {
                           minute: '2-digit',
                         })}
                       </span>
+                      {msg.username === user?.username && (
+                        <button
+                          onClick={() => handleRemoveMessage(msg.id)}
+                          className="text-xs text-muted-foreground hover:text-destructive"
+                        >
+                          <Icon name="Trash2" size={14} />
+                        </button>
+                      )}
+                      {msg.username !== user?.username && (
+                        <button
+                          onClick={() => handleReportMessage(msg.id)}
+                          className="text-xs text-muted-foreground hover:text-destructive"
+                        >
+                          <Icon name="Flag" size={14} />
+                        </button>
+                      )}
                     </div>
                     <div
                       className={`inline-block px-4 py-2 rounded-lg ${
@@ -290,7 +551,19 @@ export default function Index() {
                           : 'bg-secondary'
                       }`}
                     >
-                      {msg.message}
+                      {msg.messageType === 'image' && msg.mediaUrl && (
+                        <img 
+                          src={msg.mediaUrl} 
+                          alt="Изображение" 
+                          className="max-w-xs rounded mb-2"
+                        />
+                      )}
+                      {msg.messageType === 'audio' && msg.mediaUrl && (
+                        <audio controls className="mb-2">
+                          <source src={msg.mediaUrl} />
+                        </audio>
+                      )}
+                      {msg.message && <div>{msg.message}</div>}
                     </div>
                   </div>
                 </div>
@@ -299,17 +572,58 @@ export default function Index() {
             <div ref={messagesEndRef} />
           </div>
 
-          <form onSubmit={handleSendMessage} className="p-4 border-t border-border flex gap-2">
-            <Input
-              type="text"
-              placeholder="Напишите сообщение..."
-              value={newMessage}
-              onChange={(e) => setNewMessage(e.target.value)}
-              className="flex-1"
-            />
-            <Button type="submit" size="icon" className="flex-shrink-0">
-              <Icon name="Send" size={20} />
-            </Button>
+          <form onSubmit={handleSendMessage} className="p-4 border-t border-border">
+            {selectedFile && (
+              <div className="mb-2 p-2 bg-secondary rounded flex items-center justify-between">
+                <span className="text-sm truncate">{selectedFile.name}</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedFile(null);
+                    if (fileInputRef.current) fileInputRef.current.value = '';
+                  }}
+                  className="ml-2"
+                >
+                  <Icon name="X" size={16} />
+                </button>
+              </div>
+            )}
+            <div className="flex gap-2">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/jpg,audio/mpeg,audio/mp3"
+                onChange={handleFileSelect}
+                className="hidden"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <Icon name="Paperclip" size={20} />
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                onClick={isRecording ? stopRecording : startRecording}
+                className={isRecording ? 'bg-destructive text-destructive-foreground' : ''}
+              >
+                <Icon name={isRecording ? 'Square' : 'Mic'} size={20} />
+              </Button>
+              <Input
+                type="text"
+                placeholder="Напишите сообщение..."
+                value={newMessage}
+                onChange={(e) => setNewMessage(e.target.value)}
+                className="flex-1"
+              />
+              <Button type="submit" size="icon" className="flex-shrink-0">
+                <Icon name="Send" size={20} />
+              </Button>
+            </div>
           </form>
         </div>
       </main>
