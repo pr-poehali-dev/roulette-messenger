@@ -1,0 +1,40 @@
+{
+  "tests": [
+    {
+      "name": "Get chat messages",
+      "method": "GET",
+      "path": "/",
+      "expectedStatus": 200,
+      "expectedBody": {
+        "messages": "array"
+      },
+      "bodyMatcher": "partial"
+    },
+    {
+      "name": "Get online users count",
+      "method": "GET",
+      "path": "/?action=online",
+      "expectedStatus": 200,
+      "expectedBody": {
+        "online": "number"
+      },
+      "bodyMatcher": "partial"
+    },
+    {
+      "name": "Send message",
+      "method": "POST",
+      "body": {
+        "userId": 1,
+        "username": "testuser",
+        "message": "Hello world"
+      },
+      "expectedStatus": 200,
+      "expectedBody": {
+        "id": "number",
+        "username": "string",
+        "message": "string"
+      },
+      "bodyMatcher": "partial"
+    }
+  ]
+}
